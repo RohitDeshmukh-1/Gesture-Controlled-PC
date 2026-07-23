@@ -12,19 +12,40 @@ Run:
 Quit any time with 'q' in the video window.
 """
 
+import os
 import time
 import math
 import platform
 import subprocess
-
+import urllib.request
 
 import cv2
 import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
 import pyautogui
 import screen_brightness_control as sbc
 
 # Safety: moving the mouse to a screen corner aborts pyautogui actions.
 pyautogui.FAILSAFE = True
+
+# ---------------------------------------------------------------------------
+# MODEL DOWNLOAD — automatically fetches the hand landmarker model if missing.
+# ---------------------------------------------------------------------------
+
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hand_landmarker.task")
+
+
+def ensure_model():
+    """Download the hand landmarker model if it doesn't exist locally."""
+    if os.path.exists(MODEL_PATH):
+        return
+    print(f"[setup] Downloading hand landmarker model to {MODEL_PATH} ...")
+    print(f"        (this only happens once)")
+    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    print(f"[setup] Download complete ({os.path.getsize(MODEL_PATH) / 1e6:.1f} MB)")
+
 
 # ---------------------------------------------------------------------------
 # CONFIG — remap gestures to actions here without touching the logic below.
@@ -145,9 +166,6 @@ COOLDOWN = 1.0
 # HAND GEOMETRY HELPERS
 # ---------------------------------------------------------------------------
 
-mp_hands = mp.solutions.hands
-mp_draw = mp.solutions.drawing_utils
-
 # Landmark indices (MediaPipe Hands, 21 points)
 WRIST = 0
 THUMB_TIP, THUMB_IP, THUMB_MCP = 4, 3, 2
@@ -155,6 +173,31 @@ INDEX_TIP, INDEX_PIP, INDEX_MCP = 8, 6, 5
 MIDDLE_TIP, MIDDLE_PIP = 12, 10
 RING_TIP, RING_PIP = 16, 14
 PINKY_TIP, PINKY_PIP = 20, 18
+
+# MediaPipe hand skeleton connections for drawing (same as the old
+# mp.solutions.hands.HAND_CONNECTIONS).
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),       # thumb
+    (0, 5), (5, 6), (6, 7), (7, 8),       # index
+    (0, 9), (9, 10), (10, 11), (11, 12),   # middle  (via 0→9 shortcut)
+    (0, 13), (13, 14), (14, 15), (15, 16), # ring    (via 0→13 shortcut)
+    (0, 17), (17, 18), (18, 19), (19, 20), # pinky   (via 0→17 shortcut)
+    (5, 9), (9, 13), (13, 17),             # palm cross-connections
+]
+
+
+def draw_hand_landmarks(frame, landmarks):
+    """Draw hand skeleton on the frame, replicating the old mp_draw behavior."""
+    h, w, _ = frame.shape
+    points = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
+
+    # Draw connections (lines)
+    for start_idx, end_idx in HAND_CONNECTIONS:
+        cv2.line(frame, points[start_idx], points[end_idx], (0, 255, 0), 2)
+
+    # Draw landmarks (circles)
+    for px, py in points:
+        cv2.circle(frame, (px, py), 5, (0, 0, 255), -1)
 
 
 def _dist(a, b):
@@ -278,16 +321,24 @@ def classify_gesture(landmarks, handedness_label):
 # ---------------------------------------------------------------------------
 
 def main():
+    ensure_model()
+
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("ERROR: could not open webcam. Check camera permissions / index.")
         return
 
-    hands = mp_hands.Hands(
-        max_num_hands=1,
-        min_detection_confidence=0.7,
+    # Set up HandLandmarker with the new Tasks API (VIDEO mode for frame-by-
+    # frame processing with tracking between frames).
+    base_options = mp_python.BaseOptions(model_asset_path=MODEL_PATH)
+    options = mp_vision.HandLandmarkerOptions(
+        base_options=base_options,
+        running_mode=mp_vision.RunningMode.VIDEO,
+        num_hands=1,
+        min_hand_detection_confidence=0.7,
         min_tracking_confidence=0.6,
     )
+    landmarker = mp_vision.HandLandmarker.create_from_options(options)
 
     # Track how long the current gesture has been held, and last fire time.
     current_gesture = None
@@ -296,71 +347,77 @@ def main():
     fired_this_hold = False
 
     prev_time = time.time()
+    frame_timestamp_ms = 0
 
     print("Gesture Controlled PC running. Press 'q' in the video window to quit.")
     print("Recognized gestures:")
     for name, (label, _) in GESTURE_ACTIONS.items():
         print(f"  {name:12s} -> {label}")
 
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
 
-        frame = cv2.flip(frame, 1)  # mirror for natural interaction
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands.process(rgb)
+            frame = cv2.flip(frame, 1)  # mirror for natural interaction
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        detected = None
-        if results.multi_hand_landmarks:
-            hand_landmarks = results.multi_hand_landmarks[0]
-            handedness_label = "Right"
-            if results.multi_handedness:
-                handedness_label = results.multi_handedness[0].classification[0].label
+            # Convert to MediaPipe Image and run detection.
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            frame_timestamp_ms += 33  # ~30 fps; must be monotonically increasing
+            results = landmarker.detect_for_video(mp_image, frame_timestamp_ms)
 
-            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-            detected = classify_gesture(hand_landmarks.landmark, handedness_label)
+            detected = None
+            if results.hand_landmarks:
+                landmarks = results.hand_landmarks[0]  # first hand
+                handedness_label = "Right"
+                if results.handedness:
+                    handedness_label = results.handedness[0][0].category_name
 
-        now = time.time()
+                draw_hand_landmarks(frame, landmarks)
+                detected = classify_gesture(landmarks, handedness_label)
 
-        if detected != current_gesture:
-            current_gesture = detected
-            gesture_start_time = now
-            fired_this_hold = False
+            now = time.time()
 
-        status_text = "No gesture"
-        if current_gesture:
-            label, action_fn = GESTURE_ACTIONS.get(current_gesture, (current_gesture, None))
-            held_for = now - gesture_start_time
-            status_text = f"{current_gesture} ({label}) held {held_for:.1f}s"
+            if detected != current_gesture:
+                current_gesture = detected
+                gesture_start_time = now
+                fired_this_hold = False
 
-            if (
-                action_fn is not None
-                and held_for >= HOLD_TIME
-                and not fired_this_hold
-                and (now - last_fired[current_gesture]) >= COOLDOWN
-            ):
-                action_fn()
-                last_fired[current_gesture] = now
-                fired_this_hold = True
-                status_text += "  [FIRED]"
+            status_text = "No gesture"
+            if current_gesture:
+                label, action_fn = GESTURE_ACTIONS.get(current_gesture, (current_gesture, None))
+                held_for = now - gesture_start_time
+                status_text = f"{current_gesture} ({label}) held {held_for:.1f}s"
 
-        # FPS
-        fps = 1.0 / max(now - prev_time, 1e-6)
-        prev_time = now
+                if (
+                    action_fn is not None
+                    and held_for >= HOLD_TIME
+                    and not fired_this_hold
+                    and (now - last_fired[current_gesture]) >= COOLDOWN
+                ):
+                    action_fn()
+                    last_fired[current_gesture] = now
+                    fired_this_hold = True
+                    status_text += "  [FIRED]"
 
-        cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, f"FPS: {fps:.0f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
-        cv2.putText(frame, "Press 'q' to quit", (10, frame.shape[0] - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            # FPS
+            fps = 1.0 / max(now - prev_time, 1e-6)
+            prev_time = now
 
-        cv2.imshow("Gesture Controlled PC", frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+            cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(frame, f"FPS: {fps:.0f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+            cv2.putText(frame, "Press 'q' to quit", (10, frame.shape[0] - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-    cap.release()
-    cv2.destroyAllWindows()
-    hands.close()
+            cv2.imshow("Gesture Controlled PC", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+        landmarker.close()
 
 
 if __name__ == "__main__":

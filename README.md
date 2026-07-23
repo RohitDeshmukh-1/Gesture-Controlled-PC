@@ -9,15 +9,15 @@ Control your computer using hand gestures tracked live from your webcam — no s
 The system runs a real-time pipeline with four stages:
 
 ```
-Webcam → OpenCV → MediaPipe Hands → Gesture Classifier → OS Action
+Webcam → OpenCV → MediaPipe HandLandmarker → Gesture Classifier → OS Action
 ```
 
 1. **OpenCV** captures video frames from your webcam and displays the live feed with overlays.
-2. **MediaPipe Hands** detects your hand in each frame and returns 21 3D landmark points (fingertips, knuckles, wrist, etc.).
+2. **MediaPipe HandLandmarker** (Tasks API) detects your hand in each frame and returns 21 3D landmark points (fingertips, knuckles, wrist, etc.). It uses a pre-trained `.task` model file that is **automatically downloaded** on first run.
 3. A **rule-based gesture classifier** checks which fingers are extended vs. curled by comparing landmark positions — each gesture maps to a unique finger pattern, so no two gestures can be confused.
 4. When a gesture is held steadily for 0.5 seconds, **PyAutoGUI** (and supporting libraries) execute the mapped OS action — pressing a key, adjusting brightness, taking a screenshot, or launching an app.
 
-The entire pipeline runs in a single Python script ([`gesture_control.py`](gesture_control.py)) with no training data or ML model files needed — MediaPipe provides the pre-trained hand detection, and the gesture classification is pure rule-based logic.
+The entire pipeline runs in a single Python script ([`gesture_control.py`](gesture_control.py)). The MediaPipe model (`hand_landmarker.task`, ~12 MB) is downloaded automatically the first time you run the script — no manual setup needed.
 
 ---
 
@@ -25,12 +25,12 @@ The entire pipeline runs in a single Python script ([`gesture_control.py`](gestu
 
 | Library | Version | Role |
 |---|---|---|
-| [OpenCV](https://opencv.org/) (`opencv-python`) | 4.10.0 | Webcam capture, frame processing, and live video display |
-| [MediaPipe](https://mediapipe.dev/) (`mediapipe`) | 0.10.14 | Real-time hand landmark detection (21 keypoints per hand) |
-| [PyAutoGUI](https://pyautogui.readthedocs.io/) (`pyautogui`) | 0.9.54 | Simulating keyboard presses, hotkeys, and taking screenshots |
-| [screen-brightness-control](https://github.com/Crozzers/screen_brightness_control) (`screen-brightness-control`) | 0.24.1 | Cross-platform screen brightness adjustment via OS APIs |
+| [OpenCV](https://opencv.org/) (`opencv-python`) | ≥ 4.10.0 | Webcam capture, frame processing, and live video display |
+| [MediaPipe](https://mediapipe.dev/) (`mediapipe`) | ≥ 0.10.30 | Real-time hand landmark detection via the modern Tasks API (21 keypoints per hand) |
+| [PyAutoGUI](https://pyautogui.readthedocs.io/) (`pyautogui`) | ≥ 0.9.54 | Simulating keyboard presses, hotkeys, and taking screenshots |
+| [screen-brightness-control](https://github.com/Crozzers/screen_brightness_control) (`screen-brightness-control`) | ≥ 0.24.1 | Cross-platform screen brightness adjustment via OS APIs |
 
-**Built-in Python modules also used:** `subprocess` (launching apps), `platform` (OS detection), `time`, `math`.
+**Built-in Python modules also used:** `subprocess` (launching apps), `platform` (OS detection), `time`, `math`, `urllib.request` (auto model download).
 
 ---
 
@@ -60,8 +60,9 @@ Every gesture uses a **unique combination of extended fingers**, making them una
 
 ### Prerequisites
 
-- **Python 3.9 – 3.11** (MediaPipe doesn't support all Python versions — 3.10 or 3.11 is safest)
+- **Python 3.9+** (tested on 3.10, 3.11, and 3.13)
 - A working **webcam**
+- Internet connection on first run (to auto-download the ~12 MB hand landmarker model)
 
 ### Installation
 
@@ -88,7 +89,7 @@ pip install -r requirements.txt
 python gesture_control.py
 ```
 
-A webcam window opens showing the live feed with hand landmarks drawn on screen. Hold any gesture steady for ~0.5 seconds to trigger its action. The current gesture, hold time, and FPS are shown as overlay text.
+On first run, the script will download the `hand_landmarker.task` model (~12 MB) automatically. Then a webcam window opens showing the live feed with hand landmarks drawn on screen. Hold any gesture steady for ~0.5 seconds to trigger its action. The current gesture, hold time, and FPS are shown as overlay text.
 
 **Press `q` in the video window to quit.**
 
@@ -174,9 +175,10 @@ Works out of the box. Media keys (`volumeup`, `volumedown`, `nexttrack`, `prevtr
 
 ```
 Gesture/
-├── gesture_control.py    # Main script — all logic in one file
-├── requirements.txt      # Python dependencies
-└── README.md             # This file
+├── gesture_control.py     # Main script — all logic in one file
+├── requirements.txt       # Python dependencies
+├── hand_landmarker.task   # MediaPipe model (auto-downloaded on first run)
+└── README.md              # This file
 ```
 
 ## License
