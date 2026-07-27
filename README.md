@@ -56,6 +56,41 @@ Every gesture uses a **unique combination of extended fingers**, making them una
 
 ---
 
+## Mouse Mode (Air Mouse)
+
+Press **`m`** in the video window to toggle **Mouse Mode**. In this mode, your hand becomes a touchless mouse — point, click, drag, and scroll without touching your desk.
+
+While Mouse Mode is active, all standard gesture actions (play/pause, screenshot, etc.) are **disabled** to prevent accidental triggers. Press `m` again to switch back to Gesture Mode.
+
+### Mouse Controls
+
+| Hand Pose | Action |
+|---|---|
+| ☝️ **Index finger only** | **Move cursor** — index fingertip maps to screen position with EMA smoothing |
+| ☝️👍 **Index + Thumb extended** | **Left click** (quick pose) / **Drag** (hold pose and move hand) |
+| ☝️🤙 **Index + Pinky extended** | **Right click** (single fire) |
+| ✌️ **Index + Middle extended** | **Scroll** — move hand up/down to scroll pages |
+
+### How the Smoothing & Debounce Work
+
+- **Exponential Moving Average (EMA)** (`MOUSE_SMOOTHING = 0.3`) filters out frame-to-frame hand jitter.
+- **Deadzone** (`MOUSE_DEADZONE = 0.005`) ignores tiny micro-tremors when holding your finger still.
+- **Frame debounce** (`CLICK_DEBOUNCE_FRAMES = 3`): Click gestures must be held for 3 consecutive frames (~100 ms) before triggering, eliminating single-frame mis-clicks.
+
+### Mouse Mode Config
+
+All tuning values are at the top of [`gesture_control.py`](gesture_control.py):
+
+| Parameter | Default | Description |
+|---|---|---|
+| `MOUSE_SMOOTHING` | `0.3` | EMA factor for cursor smoothing (0.0–1.0) |
+| `MOUSE_DEADZONE` | `0.005` | Minimum normalized movement to register |
+| `CLICK_DEBOUNCE_FRAMES` | `3` | Consecutive frames to confirm a click (~100 ms) |
+| `SCROLL_SPEED` | `15` | Scroll sensitivity multiplier |
+| `MOUSE_FRAME_MARGIN` | `0.1` | Frame edge margin (fraction, 0.0–0.5) |
+
+---
+
 ## Setup
 
 ### Prerequisites
